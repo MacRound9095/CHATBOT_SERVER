@@ -110,7 +110,19 @@ if key in user_locks and not user_locks[key].locked():
     del user_locks[key]
 ```
 
-#### 4. LLM 重试逻辑
+#### 4. 修复思考标签清理正则
+
+**文件**: `websocket_server.py`
+
+修复正则表达式，正确匹配并移除 `<thought>...</thought>` 等思考标签，防止思考过程被发送给用户。
+
+#### 5. chat_with_history 支持 system_prompt
+
+**文件**: `llm.py`
+
+修复 `chat_with_history()` 方法，添加 `system_prompt` 参数支持，使猫娘性格 prompt 可以正常工作。
+
+#### 6. LLM 重试逻辑
 
 **文件**: `websocket_server.py`
 
@@ -177,9 +189,9 @@ if key in user_locks and not user_locks[key].locked():
 | 文件 | 变更类型 | 说明 |
 |------|----------|------|
 | `websocket_server.py` | 修改 | 并发处理 + 聊天历史 |
-| `llm.py` | 修改 | 新增 `history` 参数和 `chat_with_history()` 方法 |
+| `llm.py` | 修改 | 新增 `history` 参数、`chat_with_history()` 方法及 `system_prompt` 支持 |
 | `mcp_config.json` | 新增 | MCP 服务器配置 |
-| `docs/concurrency-guide-for-beginners.md` | 新增 | 并发编程教育文档 |
+| `docs/concurrency-guide-for-beginners.md` | 修改 | 补充异步+并发代码案例和详细解释 |
 
 ---
 

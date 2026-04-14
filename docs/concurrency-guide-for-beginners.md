@@ -41,6 +41,42 @@ async def process_message(data, websocket):
 - 你不需要一直站在柜台前，可以坐着玩手机
 - 被叫到时再过去取餐
 
+### 1.1 异步 + 并发 = 高效处理
+
+**异步是并发的前提条件：**
+
+```python
+# websocket_server.py 第486行
+asyncio.create_task(process_message(data, websocket))
+```
+
+这段代码展示了它们的关系：
+
+| 概念 | 代码作用 |
+|------|----------|
+| `async def` | 定义异步函数，允许 `await` 挂起 |
+| `await llm_client.chat()` | **异步等待**——在等 LLM 时不阻塞其他任务 |
+| `asyncio.create_task()` | **创建任务**——交给事件循环调度执行 |
+| `semaphore` | **并发控制**——限制同时运行的任务数 |
+| `Lock` | **互斥**——保证同一用户的代码串行执行 |
+
+**关键点**：如果没有 `async/await`，程序在等 LLM 响应时会卡住，无法同时处理其他消息。有了异步，才可能实现并发。
+
+**代码流程：**
+```python
+# 1. handler 是异步的，能"同时"接收很多消息
+async def handler(websocket):
+    async for raw_message in websocket:  # 不断接收消息
+        asyncio.create_task(process_message(...))  # 立即返回，不等待完成
+
+# 2. process_message 内部用 await，不阻塞其他任务
+async def process_message(data, websocket):
+    async with semaphore:  # 等信号量许可（不阻塞其他用户）
+        async with user_locks[key]:  # 等锁（同一用户串行）
+            response = await llm_client.chat(message)  # 等 LLM（不阻塞其他任务）
+            await websocket.send(...)  # 发消息（不阻塞）
+```
+
 ---
 
 ### 2. 任务（Task）
@@ -136,7 +172,7 @@ tasks: set[asyncio.Task] = set()  # 活跃任务集合
 task = asyncio.current_task()
 if task:
     tasks.add(task)
-    task.add_done_callback(tasks.discard)
+    task.add_done_callback(tasks.discard)  # 任务完成后自动从集合移除
 ```
 
 **用途：**
@@ -144,35 +180,91 @@ if task:
 - 服务器关闭时可以取消所有未完成的任务
 - 监控并发状态
 
+**结合信号量和异步的完整例子：**
+```python
+# 模拟场景：3个用户同时发消息
+
+async def main():
+    semaphore = asyncio.Semaphore(3)  # 限制3个并发
+    tasks: set[asyncio.Task] = set()
+
+    async def process(name):
+        async with semaphore:
+            print(f"{name} 开始处理")
+            await asyncio.sleep(2)  # 模拟 LLM 调用
+            print(f"{name} 完成")
+            tasks.discard(asyncio.current_task())
+
+    # 创建3个任务
+    for i in range(3):
+        task = asyncio.create_task(process(f"用户{i}"))
+        tasks.add(task)
+
+    # 等待所有任务完成
+    await asyncio.gather(*tasks)
+
+# 输出（注意时间戳）：
+# 用户0 开始处理
+# 用户1 开始处理
+# 用户2 开始处理
+# （2秒后）
+# 用户0 完成
+# 用户1 完成
+# 用户2 完成
+```
+
+**为什么需要 Tasks Set？**
+
+想象服务器突然要关闭：
+- 没有 Tasks Set：不知道有哪些任务在跑，可能强制杀掉正在处理的任务
+- 有 Tasks Set：可以先取消所有任务，等待它们完成，再安全退出
+
 ---
 
 ## 完整流程图解
 
 ```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        异步 + 并发 完整流程                           │
+└─────────────────────────────────────────────────────────────────────┘
+
 消息1 (用户A) ──┐
-消息2 (用户B) ──┼──→ handler() ──→ asyncio.create_task()
-消息3 (用户A) ──┘                      │
-                                      ▼
-                           ┌─────────────────────┐
-                           │  semaphore.acquire() │ ← 检查是否超过3个并发
-                           └─────────────────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                 ▼                 ▼
-               用户A的锁           用户B的锁          用户C的锁
-               (等待中)           (处理中)          (等待中)
-                    │                 │                 │
-                    ▼                 ▼                 │
-               (获取锁)          LLM API 调用        ......|
-                    │                 │                 │
-                    ▼                 ▼                 ▼
-               LLM API 调用 ─────→ 发送回复 ─────→ 释放锁
-                    │                                   │
-                    └───────────────────────────────────┘
-                                      │
-                           ┌─────────────────────┐
-                           │  semaphore.release() │
-                           └─────────────────────┘
+消息2 (用户B) ──┼──→ handler() 接收消息（异步，不阻塞）
+消息3 (用户A) ──┘         │
+                          ▼ asyncio.create_task() 创建任务（立即返回）
+              ┌───────────────────────────────┐
+              │  事件循环调度                  │
+              │  （所有任务在这里"同时"交替执行） │
+              └───────────────────────────────┘
+                          │
+                          ▼
+              ┌─────────────────────┐
+              │  semaphore.acquire() │ ← 异步等待，不阻塞其他任务
+              └─────────────────────┘
+                          │
+        ┌─────────────────┼─────────────────┐
+        ▼                 ▼                 ▼
+   用户A的锁          用户B的锁          用户C的锁
+   (等待中)           (处理中)          (等待中)
+        │                 │                 │
+        ▼                 ▼                 │
+   (获取锁)          await chat()          ......|
+        │                 │                 │
+        ▼                 ▼                 ▼
+   await chat() ──→ 发送回复 ──────→ 释放锁
+        │                                   │
+        └───────────────────────────────────┘
+                          │
+              ┌─────────────────────┐
+              │  semaphore.release() │
+              └─────────────────────┘
+
+【关键点】
+1. handler() 用 async for，不阻塞接收
+2. create_task() 立即返回，不等任务完成
+3. semaphore.acquire() 是异步的，等的时候可以做别的
+4. await chat() 等待时不阻塞事件循环，其他任务可以执行
+5. Lock 保证同一用户的消息按顺序执行
 ```
 
 ---
@@ -296,16 +388,39 @@ Python 的 asyncio 是**并发**，不是并行。
 
 ## 总结
 
+### 概念对照表
+
 | 概念 | 作用 | 类比 |
 |------|------|------|
-| asyncio | 异步编程基础 | 点餐后等叫号 |
-| Task | 表示一个异步执行单元 | 服务员把订单交给厨房 |
-| Semaphore | 限制最大并发数 | 奶茶店只有3个座位 |
-| Lock | 保证同一用户消息串行 | 公共厕所一次只能一个人用 |
-| Tasks Set | 跟踪所有活跃任务 | 记录有多少菜在做着 |
+| `async/await` | 异步编程基础，让等待不阻塞 | 点餐后等叫号 |
+| `Task` | 表示一个异步执行单元，交给事件循环调度 | 服务员把订单交给厨房 |
+| `Semaphore` | 限制最大并发数 | 奶茶店只有3个座位 |
+| `Lock` | 保证同一用户消息串行 | 公共厕所一次只能一个人用 |
+| `Tasks Set` | 跟踪所有活跃任务 | 记录有多少菜在做着 |
 
-通过这些机制的组合，本程序实现了：
-1. **不同用户可以同时聊天**（信号量控制）
-2. **同一用户的消息顺序不变**（锁控制）
+### 异步和并发的关系
+
+```
+异步（Asyncio）                    并发（Concurrency）
+     │                                  │
+     │  提供 async/await 机制            │  在异步基础上实现
+     │  让"等待"不阻塞                   │  多任务同时执行
+     │                                  │
+     └────────────┬────────────────────┘
+                  │
+                  ▼
+         asyncio.create_task()
+         任务被提交给事件循环
+         多个任务交替执行（并发）
+```
+
+**简单理解**：
+- **异步** = `await` + 事件循环（不排队等）
+- **并发** = Task + Semaphore + Lock（一起干但有序）
+
+本程序正是通过 asyncio 提供的能力，实现了：
+1. **不同用户可以同时聊天**（信号量控制最大3个并发）
+2. **同一用户的消息顺序不变**（锁控制串行）
 3. **API 调用失败自动重试**（重试逻辑）
 4. **不会处理自己发送的消息**（过滤逻辑）
+5. **服务器可优雅关闭**（Tasks Set 跟踪所有任务）

@@ -29,14 +29,14 @@ class LLM:
         self._mcp: Optional["MCP"] = None
         self._tools: List[Dict] = []
         self._session: Optional[aiohttp.ClientSession] = None  # 复用的 HTTP Session
-    
+
     # 默认 API 密钥
     DEFAULT_API_KEY = "sk-cp-igmDJBhLtPG2CriZJ1x3DIYHhYW6-YBi7s0GCIM27KGQkaYFCve8S6V46LzDFN-Qt_dnspyfJYcGvvBk-RVIObfD7zoN9IUJpxI8_LwgWaYGwG3eRnUV0ZY"
-    
+
     def _get_api_key(self) -> str:
         import os
         return os.environ.get("MINIMAX_API_KEY", "") or self.DEFAULT_API_KEY
-    
+
     async def init_mcp(self) -> None:
         """初始化 MCP"""
         from mcp import MCP
@@ -46,7 +46,7 @@ class LLM:
         tools = await self._mcp.discover()
         self._tools = [self._convert_tool(t) for t in tools]
         print(f"[LLM] 已加载 {len(self._tools)} 个工具")
-    
+
     def _convert_tool(self, tool) -> Dict:
         """转换工具格式"""
         return {
@@ -57,7 +57,7 @@ class LLM:
                 "parameters": tool.input_schema or {"type": "object", "properties": {}, "required": []}
             }
         }
-    
+
     async def chat(self, message: str, system_prompt: str = "", history: list = None) -> str:
         """对话，支持工具调用和历史记录"""
         messages = []
@@ -68,8 +68,10 @@ class LLM:
         messages.append({"role": "user", "content": message})
         return await self._chat_loop(messages)
 
-    async def chat_with_history(self, messages: list) -> str:
+    async def chat_with_history(self, messages: list, system_prompt: str = "") -> str:
         """直接使用预构建的消息列表进行对话（用于带历史的场景）"""
+        if system_prompt:
+            messages = [{"role": "system", "content": system_prompt}] + messages
         return await self._chat_loop(messages)
 
     async def _chat_loop(self, messages: list) -> str:
@@ -121,7 +123,7 @@ class LLM:
             except:
                 return {}
         return args or {}
-    
+
     async def _request(self, payload: Dict) -> Dict:
         """发送请求到 LLM API，复用 HTTP Session"""
         url = "https://api.minimaxi.com/v1/chat/completions"
@@ -132,7 +134,7 @@ class LLM:
             if r.status != 200:
                 raise Exception(f"API错误: {await r.text()}")
             return await r.json()
-    
+
     async def close(self) -> None:
         """关闭所有连接"""
         if self._mcp:
@@ -140,11 +142,11 @@ class LLM:
         if self._session:
             await self._session.close()
             self._session = None
-    
+
     def list_tools(self) -> List[str]:
         """列出工具"""
         return [t["function"]["name"] for t in self._tools]
-    
+
     def list_servers(self) -> List[str]:
         """列出服务器"""
         return self._mcp.list_servers() if self._mcp else []

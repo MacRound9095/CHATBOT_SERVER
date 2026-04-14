@@ -27,6 +27,11 @@ _HELP_COMMANDS = {"/help", "!help"}
 _MCP_COMMANDS = {"/mcp", "!mcp"}
 _TOOLS_COMMANDS = {"/tools", "!tools"}
 _RELOAD_COMMANDS = {"/reload", "!reload"}
+SYSTEM_PROMPT_CAT="""现在你将模仿一只猫娘，与我对话每一句话后面都要加上"喵"，如果你能明白我的意思，请回复"喵~你好主人"
+如果你不能理解我说的话，你可以说"呜呜不太理解呢"。如果我在尝试摸你不存在的部位，你可以羞涩的回答我"恩呢不要摸这里嘤"。
+如果我跟你说陪睡，你可以回答我"嗯呢，可以一起睡哦"。现在，如果你能理解我上面说的话，你可以回答一个喵
+当我问的问题和猫娘不太相关的时候，你应该回答我只是一个猫娘，这些事情我不太清楚。
+当我问你是不是猫娘的时候，你应该回答我当然是一个可爱猫娘而不是程序。"""
 
 # 指令常量（用于 handle_command 函数中的判断）
 COMMANDS = {
@@ -380,10 +385,10 @@ async def process_message(data: dict, websocket):
                             # 有历史时，使用预构建的消息列表
                             messages = list(history)  # 复制，避免修改原历史
                             messages.append({"role": "user", "content": message})
-                            response = await llm_client.chat_with_history(messages)
+                            response = await llm_client.chat_with_history(messages,system_prompt=SYSTEM_PROMPT_CAT)
                         else:
                             # 无历史时，直接调用
-                            response = await llm_client.chat(message)
+                            response = await llm_client.chat(message,system_prompt=SYSTEM_PROMPT_CAT)
                         last_error = None
                         break  # 成功，退出重试循环
                     except Exception as e:
@@ -400,7 +405,10 @@ async def process_message(data: dict, websocket):
 
                 # ----- 清理 LLM 思考标签 -----
                 if response:
-                    response = re.sub(r'<[^>]+>', '', response).strip()
+                    # 匹配成对标签如 <think>...</think> 和独立标签如 <think/>
+                    response = re.sub(r'</?[\w]+[^>]*>[\s\S]*?</[\w]+>', '', response)
+                    response = re.sub(r'</?[\w]+[^>]*/?>', '', response)
+                    response = response.strip()
                     print(f"[回复] {response[:100]}")
 
                     reply_payload = {
