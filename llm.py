@@ -57,13 +57,15 @@ class LLM:
             }
         }
     
-    async def chat(self, message: str, system_prompt: str = "") -> str:
-        """对话，支持工具调用"""
+    async def chat(self, message: str, system_prompt: str = "", history: list = None) -> str:
+        """对话，支持工具调用和历史记录"""
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
         messages.append({"role": "user", "content": message})
-        
+
         for turn in range(self.max_turns):
             payload = {"model": self.model, "messages": messages}
             if self._tools:
@@ -93,7 +95,39 @@ class LLM:
         return "抱歉，工具调用次数已达上限。以下是我收集到的信息：\n\n" + "\n\n".join(
             f"- {m.get('content', '')[:200]}" for m in messages if m.get("role") == "tool"
         )
-    
+
+    async def chat_with_history(self, messages: list) -> str:
+        """直接使用预构建的消息列表进行对话（用于带历史的场景）"""
+        for turn in range(self.max_turns):
+            payload = {"model": self.model, "messages": messages}
+            if self._tools:
+                payload["tools"] = self._tools
+
+            result = await self._request(payload)
+            choice = result.get("choices", [{}])[0]
+            msg = choice.get("message", {})
+            messages.append(msg)
+
+            tool_calls = msg.get("tool_calls", [])
+            if not tool_calls:
+                return msg.get("content", "")
+
+            for tc in tool_calls:
+                func = tc.get("function", {})
+                name, args = func.get("name", ""), self._parse_args(func.get("arguments", "{}"))
+                print(f"[MCP] 调用: {name} {args}")
+                try:
+                    result = await self._mcp.call(name, args)
+                    print(f"[MCP] 结果: {str(result)[:100]}...")
+                except Exception as e:
+                    result = f"错误: {e}"
+                messages.append({"role": "tool", "tool_call_id": tc.get("id"), "content": str(result)})
+
+        # 达到上限，返回已收集的结果
+        return "抱歉，工具调用次数已达上限。以下是我收集到的信息：\n\n" + "\n\n".join(
+            f"- {m.get('content', '')[:200]}" for m in messages if m.get("role") == "tool"
+        )
+
     def _parse_args(self, args) -> Dict:
         if isinstance(args, str):
             try:
