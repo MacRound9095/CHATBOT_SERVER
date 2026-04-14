@@ -122,6 +122,56 @@ if key in user_locks and not user_locks[key].locked():
 
 ---
 
+## [代码优化] - 2026-04-14
+
+### Refactored
+
+#### 1. 代码去重
+
+**文件**: `llm.py`
+
+将 `chat()` 和 `chat_with_history()` 中的重复逻辑提取到 `_chat_loop()` 方法。
+
+#### 2. HTTP Session 复用
+
+**文件**: `llm.py`
+
+复用 `aiohttp.ClientSession`，避免每次请求都创建新连接。
+
+#### 3. 预编译正则表达式
+
+**文件**: `websocket_server.py`
+
+预编译 CQ 码正则，避免每次调用都重新编译。
+
+#### 4. 消息提取 Helper
+
+**文件**: `websocket_server.py`
+
+提取 `extract_text_from_message()` 统一消息提取逻辑。
+
+#### 5. 命令常量集合化
+
+**文件**: `websocket_server.py`
+
+将命令字符串常量集合化（`_HELP_COMMANDS` 等）。
+
+#### 6. 魔法数字命名
+
+**文件**: `websocket_server.py`
+
+将魔数改为命名常量（`MAX_CONCURRENT`、`MAX_RETRY_ATTEMPTS`、`MAX_TOOLS_DISPLAY`）。
+
+### Fixed
+
+#### 5. 历史清理内存泄漏
+
+**文件**: `websocket_server.py`
+
+添加 `_cleanup_expired_histories()` 后台任务每小时清理过期历史，修复 abandoned 对话内存泄漏。
+
+---
+
 ## 变更文件清单
 
 | 文件 | 变更类型 | 说明 |
