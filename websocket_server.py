@@ -22,10 +22,16 @@ from llm import LLM
 
 # ==================== 常量定义 ====================
 
-# 常用指令列表，用于检测用户输入的命令
+# 指令集合（使用 set 便于快速查找）
+_HELP_COMMANDS = {"/help", "!help"}
+_MCP_COMMANDS = {"/mcp", "!mcp"}
+_TOOLS_COMMANDS = {"/tools", "!tools"}
+_RELOAD_COMMANDS = {"/reload", "!reload"}
+
+# 指令常量（用于 handle_command 函数中的判断）
 COMMANDS = {
     "/help": "帮助",
-    "!help": "帮助", 
+    "!help": "帮助",
     "/mcp": "MCP服务器",
     "!mcp": "MCP服务器",
     "/tools": "工具列表",
@@ -33,6 +39,11 @@ COMMANDS = {
     "/reload": "重启MCP",
     "!reload": "重启MCP",
 }
+
+# 并发和历史相关常量
+MAX_CONCURRENT = 3          # 最大并发消息数
+MAX_RETRY_ATTEMPTS = 3     # LLM 调用最大重试次数
+MAX_TOOLS_DISPLAY = 20      # /tools 命令最多显示的工具数
 
 # 帮助文本，用户输入 /help 时显示
 HELP_TEXT = """📖 MiniMax MCP 助手使用指南
@@ -66,6 +77,9 @@ conversation_history: dict[str, list] = {}  # 对话历史，key = "private:1234
 last_activity: dict[str, float] = {}     # 上次活跃时间戳
 MAX_HISTORY = 20      # 每对话最大消息数
 MAX_HISTORY_AGE = 7 * 24 * 3600  # 7天过期（秒）
+
+# 预编译的正则表达式（避免重复编译）
+_CQ_PATTERN = re.compile(r'\[CQ:([^,\]]+)(?:,([^\]]*))?\]')
 
 
 # ==================== 工具函数 ====================
@@ -112,6 +126,48 @@ def get_history_key(data: dict) -> str | None:
     return None
 
 
+def extract_text_from_message(data: dict) -> str | None:
+    """
+    从消息字段中提取纯文本内容。
+
+    支持两种格式：
+    - 字符串格式：直接返回 或 解析 CQ 码后提取文本段
+    - 列表格式：遍历消息段，提取所有 type="text" 的内容
+
+    Args:
+        data: 解析后的 JSON 消息字典
+
+    Returns:
+        提取的纯文本，消息为空时返回 None
+    """
+    if "message" not in data:
+        return None
+
+    msg_field = data["message"]
+
+    if isinstance(msg_field, str):
+        if "[CQ:" in msg_field:
+            # CQ 码格式：解析后提取所有文本段
+            segments = parse_cq_code(msg_field)
+            parts = []
+            for seg in segments:
+                if seg.get("type") == "text":
+                    parts.append(seg.get("data", {}).get("text", ""))
+            return "".join(parts).strip() or None
+        else:
+            return msg_field.strip() or None
+
+    if isinstance(msg_field, list):
+        parts = []
+        for seg in msg_field:
+            if isinstance(seg, dict):
+                if seg.get("type") == "text":
+                    parts.append(seg.get("data", {}).get("text", ""))
+        return "".join(parts).strip() or None
+
+    return None
+
+
 def parse_cq_code(text: str) -> list:
     """
     解析 CQ 码格式的消息为消息段数组
@@ -126,12 +182,9 @@ def parse_cq_code(text: str) -> list:
         消息段列表，如 [{"type": "at", "data": {"qq": "123"}}, {"type": "text", "data": {"text": " hello"}}]
     """
     segments = []
-    
-    # 正则匹配所有 CQ 码
-    cq_pattern = r'\[CQ:([^,\]]+)(?:,([^\]]*))?\]'
-    
+
     last_end = 0
-    for match in re.finditer(cq_pattern, text):
+    for match in _CQ_PATTERN.finditer(text):
         # 添加 CQ 码之前的文本
         before = text[last_end:match.start()]
         if before:
@@ -218,34 +271,34 @@ def is_at_me(data: dict) -> bool:
 async def handle_command(text: str) -> str:
     """
     处理指令并返回响应
-    
+
     Args:
         text: 用户输入的指令
-        
+
     Returns:
         指令处理结果字符串
     """
     global llm_client
-    
+
     # 统一转为小写处理
     cmd = text.strip().lower()
-    
-    if cmd in ["/help", "!help"]:
+
+    if cmd in _HELP_COMMANDS:
         return HELP_TEXT
-    
-    if cmd in ["/mcp", "!mcp"]:
+
+    if cmd in _MCP_COMMANDS:
         servers = llm_client.list_servers() if llm_client else []
         if not servers:
             return "❌ 没有配置任何 MCP 服务器"
         return "📡 MCP 服务器列表：\n" + "\n".join(f"• {s}" for s in servers)
-    
-    if cmd in ["/tools", "!tools"]:
+
+    if cmd in _TOOLS_COMMANDS:
         tools = llm_client.list_tools() if llm_client else []
         if not tools:
             return "❌ 没有发现任何工具"
-        return f"🔧 已发现 {len(tools)} 个工具：\n" + "\n".join(f"• {t}" for t in tools[:20]) + ("\n...等" if len(tools) > 20 else "")
-    
-    if cmd in ["/reload", "!reload"]:
+        return f"🔧 已发现 {len(tools)} 个工具：\n" + "\n".join(f"• {t}" for t in tools[:MAX_TOOLS_DISPLAY]) + ("\n...等" if len(tools) > MAX_TOOLS_DISPLAY else "")
+
+    if cmd in _RELOAD_COMMANDS:
         try:
             if llm_client:
                 await llm_client.close()
@@ -292,28 +345,8 @@ async def process_message(data: dict, websocket):
                 print(f"[并发] 获取锁 {key}，开始处理")
 
                 # ----- 提取消息内容 -----
-                message = None
-                if "message" in data:
-                    msg_field = data["message"]
-                    if isinstance(msg_field, str):
-                        if "[CQ:" in msg_field:
-                            segments = parse_cq_code(msg_field)
-                            parts = []
-                            for seg in segments:
-                                if seg.get("type") == "text":
-                                    parts.append(seg.get("data", {}).get("text", ""))
-                            message = "".join(parts).strip()
-                        else:
-                            message = msg_field
-                    elif isinstance(msg_field, list):
-                        parts = []
-                        for seg in msg_field:
-                            if isinstance(seg, dict):
-                                if seg.get("type") == "text":
-                                    parts.append(seg.get("data", {}).get("text", ""))
-                                elif seg.get("type") == "at":
-                                    pass  # 忽略 @ 消息段
-                        message = "".join(parts).strip()
+                # 使用 helper 函数统一提取，避免重复逻辑
+                message = extract_text_from_message(data)
 
                 if not message:
                     print(f"[跳过] 消息为空 {key}")
@@ -341,7 +374,7 @@ async def process_message(data: dict, websocket):
                 response = None
                 last_error = None
 
-                for attempt in range(3):  # 最多3次（1次原始 + 2次重试）
+                for attempt in range(MAX_RETRY_ATTEMPTS):
                     try:
                         if history:
                             # 有历史时，使用预构建的消息列表
@@ -458,12 +491,36 @@ async def handler(websocket):
 
 # ==================== 启动入口 ====================
 
+async def _cleanup_expired_histories():
+    """
+    定期清理过期的聊天历史。
+
+    每小时运行一次，删除 7 天无活动的对话历史。
+    这样可以防止 abandoned 对话（用户只聊过一次就不再出现）占用内存。
+    """
+    while True:
+        await asyncio.sleep(3600)  # 每小时检查一次
+        now = time.time()
+        expired_keys = [
+            k for k, last_time in last_activity.items()
+            if now - last_time > MAX_HISTORY_AGE
+        ]
+        for k in expired_keys:
+            conversation_history.pop(k, None)
+            last_activity.pop(k, None)
+        if expired_keys:
+            print(f"[历史] 清理了 {len(expired_keys)} 个过期对话")
+
+
 async def main():
     """启动服务器"""
     global llm_client, semaphore
 
-    # 初始化信号量（限制最大并发数为3）
-    semaphore = asyncio.Semaphore(3)
+    # 初始化信号量（限制最大并发数）
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+    # 启动历史清理后台任务
+    asyncio.create_task(_cleanup_expired_histories())
 
     # 创建 LLM 客户端
     llm_client = LLM(mcp_config="mcp_config.json")
