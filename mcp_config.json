@@ -1,0 +1,88 @@
+{
+  "mcpServers": {
+    "fetch": {
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "command": "uvx"
+    },
+    "bing-search": {
+      "timeout": 60,
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "bing-cn-mcp"
+      ]
+    },
+    "12306-mcp": {
+      "args": [
+        "-y",
+        "12306-mcp"
+      ],
+      "command": "npx"
+    },
+    "memory": {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "command": "npx"
+    },
+    "time": {
+      "args": [
+        "mcp-server-time"
+      ],
+      "command": "uvx"
+    },
+    "reddit": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-reddit"
+      ]
+    },
+    "电影搜索工具": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "xiaobenyang-mcp"
+      ],
+      "env": {
+        "XBY_APIKEY": "AJCNCOOHKAPHGHAN",
+        "mcpId": "1777316659782659"
+      },
+      "transport": "stdio"
+    },
+    "movies-search-mcp": {
+      "command": "npx",
+      "args": [
+        "@acwink/movies-search-mcp"
+      ]
+    },
+    "AI人格服务器": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "xiaobenyang-mcp"
+      ],
+      "env": {
+        "XBY_APIKEY": "AJCNCOOHKAPHGHAN",
+        "mcpId": "1777316659338243"
+      },
+      "transport": "stdio"
+    },
+    "bangumi-tv": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "D:\\VScodeProject\\MINIMIAX_LLM_FUNC\\BangumiMCP",
+        "run",
+        "main.py"
+      ],
+      "env": {
+        "BANGUMI_TOKEN": "QHfV1K1DBOZBSPrdmiFBVQnE85XsnaKewTR2W4v8"
+      },
+      "timeout": 120
+    }
+  }
+}
